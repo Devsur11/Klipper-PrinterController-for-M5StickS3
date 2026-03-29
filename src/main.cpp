@@ -7,10 +7,11 @@
 #include "network.h"
 #include "tasks.h"
 #include "inputManager.h"
+#include "loading_indicator.h"
 #include <M5GFX.h>
 #include <M5Unified.h>
 #include "esp_log.h"
-
+#include "display.h"
 static const char* TAG = "APP";
 
 ScreenManager screenManager;
@@ -145,6 +146,11 @@ void loop() {
     
     // Update screen rendering (UI is always on core 0)
     screenManager.update();
+    
+    // Draw loading indicator overlay if an API request is in progress
+    if (LoadingIndicator::getInstance().isLoading()) {
+        DisplayUtils::drawLoadingBox(LoadingIndicator::getInstance().getMessage());
+    }
     
     // Handle short button presses
     if (inputManager::isButtonAPressed()) {

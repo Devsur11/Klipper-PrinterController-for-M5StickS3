@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <vector>
+#include "loading_indicator.h"
 
 struct PrinterState {
     bool connected;

@@ -50,6 +50,10 @@ void Header::draw() {
     M5.Display.setTextColor(Theme::FG);
     M5.Display.setTextDatum(ML_DATUM);
     M5.Display.drawString(title, 2, Display::HEADER_HEIGHT / 2);
+    int batteryLevel = M5.Power.getBatteryLevel();
+    String batteryText = String(batteryLevel) + "%";
+    M5.Display.setTextDatum(MR_DATUM);
+    M5.Display.drawString(batteryText, Display::WIDTH - 2, Display::HEADER_HEIGHT / 2);
 }
 
 // Footer Implementation
@@ -124,9 +128,9 @@ void DisplayUtils::drawProgressBar(int x, int y, int w, int h, float progress) {
 
 void DisplayUtils::drawLoadingBox(const String& message) {
     // FIX: Draw loading box overlay for blocking operations
-    int boxWidth = 110;
+    int boxWidth = M5.Display.width();
     int boxHeight = 70;
-    int boxX = (Display::WIDTH - boxWidth) / 2;
+    int boxX = 0;
     int boxY = (Display::HEIGHT - boxHeight) / 2;
     
     // Draw semi-transparent dark background for box

@@ -58,6 +58,8 @@ void APIClient::update() {
 // ---------------------------------------------------------------------------
 
 bool APIClient::httpGet(const String& path, DynamicJsonDocument& result) {
+    LoadingIndicator::getInstance().setLoading(true, "Loading...");
+    
     String url = "http://" + host + ":" + String(port) + path;
     HTTPClient http;
     http.begin(url);
@@ -68,6 +70,7 @@ bool APIClient::httpGet(const String& path, DynamicJsonDocument& result) {
         ESP_LOGW(TAG, "GET %s -> %d", path.c_str(), code);
         http.end();
         if (code < 0) connected = false;
+        LoadingIndicator::getInstance().clear();
         return false;
     }
 
@@ -77,12 +80,16 @@ bool APIClient::httpGet(const String& path, DynamicJsonDocument& result) {
     DeserializationError err = deserializeJson(result, body);
     if (err) {
         ESP_LOGW(TAG, "JSON parse error (%s): %s", path.c_str(), err.c_str());
+        LoadingIndicator::getInstance().clear();
         return false;
     }
+    LoadingIndicator::getInstance().clear();
     return true;
 }
 
 bool APIClient::httpPost(const String& path, const String& jsonBody, DynamicJsonDocument& result) {
+    LoadingIndicator::getInstance().setLoading(true, "Loading...");
+    
     String url = "http://" + host + ":" + String(port) + path;
     HTTPClient http;
     http.begin(url);
@@ -94,6 +101,7 @@ bool APIClient::httpPost(const String& path, const String& jsonBody, DynamicJson
         ESP_LOGW(TAG, "POST %s -> %d", path.c_str(), code);
         http.end();
         if (code < 0) connected = false;
+        LoadingIndicator::getInstance().clear();
         return false;
     }
 
@@ -103,8 +111,10 @@ bool APIClient::httpPost(const String& path, const String& jsonBody, DynamicJson
     DeserializationError err = deserializeJson(result, body);
     if (err) {
         ESP_LOGW(TAG, "JSON parse error (%s): %s", path.c_str(), err.c_str());
+        LoadingIndicator::getInstance().clear();
         return false;
     }
+    LoadingIndicator::getInstance().clear();
     return true;
 }
 

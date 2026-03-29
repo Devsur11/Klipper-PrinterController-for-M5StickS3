@@ -910,8 +910,8 @@ void FileBrowserScreen::draw() {
 
     if (showConfirmDialog && !files.empty()) {
         // Semi-transparent overlay box
-        M5.Display.fillRect(0, 95, Display::WIDTH, 50, Theme::SECONDARY);
-        M5.Display.drawRect(0, 95, Display::WIDTH, 50, Theme::FG);
+        M5.Display.fillRect(0, 95, Display::WIDTH, 60, Theme::SECONDARY);
+        M5.Display.drawRect(0, 95, Display::WIDTH, 60, Theme::FG);
         DisplayUtils::drawCenteredText(100, "Start this file?", Theme::FG);
         // FIX: also apply marquee in dialog for very long names
         String dialogName = files[selectedFile];
@@ -1468,7 +1468,7 @@ void SettingsScreen::handleButtonB() {
         default:
             break;
     }
-}
+
 
 void SettingsScreen::handleButtonBLongPress() {
     // FIX: always exit to main menu regardless of which item is highlighted
