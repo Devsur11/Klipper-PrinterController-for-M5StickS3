@@ -32,6 +32,7 @@ void setup() {
     M5.begin(cfg);
     M5.Power.begin();
     M5.Display.begin();
+    M5.Power.setExtOutput(false);
     M5.Display.init();
     M5.Display.setRotation(8);
     M5.Display.setColorDepth(16);  // RGB565

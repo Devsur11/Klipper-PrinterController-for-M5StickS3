@@ -93,6 +93,7 @@ namespace DisplayUtils {
     void drawSpinner(int x, int y, int size);
     void drawTemperature(int x, int y, float temp, float target, const String& label);
     void drawProgressBar(int x, int y, int w, int h, float progress);
+    void drawLoadingBox(const String& message = "Loading...");  // FIX: loading overlay for blocking operations
 }
 
 #endif

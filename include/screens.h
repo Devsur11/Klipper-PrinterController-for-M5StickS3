@@ -138,6 +138,8 @@ private:
     ProgressBar* progressBar;
     Header* header;
     Footer* footer;
+    bool isLoading;  // FIX: show loading box during blocking operations
+    unsigned long loadingStartTime;  // FIX: timeout after 5 seconds
 };
 
 // ============================================================
@@ -161,6 +163,8 @@ private:
     bool showConfirmDialog;
     unsigned long marqueeTime;  // FIX: add marquee animation for long filenames
     int marqueeOffset;  // FIX: track scroll position
+    bool isLoading;  // FIX: show loading box when starting print
+    unsigned long loadingStartTime;  // FIX: timeout after 5 seconds
 };
 
 // ============================================================
@@ -250,6 +254,7 @@ public:
 private:
     Header* header;
     Footer* footer;
+    unsigned long lastRefreshTime;  // FIX: track last refresh time for 5-sec auto-refresh
 };
 
 // ============================================================
@@ -317,6 +322,10 @@ private:
     Header* header;
     Footer* footer;
     String selectedDevice;  // Store selected power device for control
+    bool isLoading;  // FIX: show loading box during power control operations
+    unsigned long loadingStartTime;  // FIX: timeout after 5 seconds
+    unsigned long marqueeTime;  // FIX: track marquee animation timing
+    int marqueeOffset;  // FIX: track scroll position for text marquee
 };
 
 #endif // SCREENS_H

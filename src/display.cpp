@@ -121,3 +121,30 @@ void DisplayUtils::drawProgressBar(int x, int y, int w, int h, float progress) {
         M5.Display.fillRect(x + 1, y + 1, fillWidth, h - 2, Theme::SUCCESS);
     }
 }
+
+void DisplayUtils::drawLoadingBox(const String& message) {
+    // FIX: Draw loading box overlay for blocking operations
+    int boxWidth = 110;
+    int boxHeight = 70;
+    int boxX = (Display::WIDTH - boxWidth) / 2;
+    int boxY = (Display::HEIGHT - boxHeight) / 2;
+    
+    // Draw semi-transparent dark background for box
+    M5.Display.setColor(Theme::SECONDARY);
+    M5.Display.fillRect(boxX, boxY, boxWidth, boxHeight, Theme::BG);
+    
+    // Draw box border with primary color
+    M5.Display.drawRect(boxX, boxY, boxWidth, boxHeight, Theme::PRIMARY);
+    
+    // Draw message text
+    M5.Display.setTextColor(Theme::FG);
+    M5.Display.setTextDatum(MC_DATUM);
+    M5.Display.setTextSize(1);
+    M5.Display.drawString(message, Display::WIDTH / 2, boxY + 25);
+    
+    // Draw spinner animation
+    drawSpinner(Display::WIDTH / 2, boxY + 50, 10);
+    
+    // Reset text datum for consistency
+    M5.Display.setTextDatum(TL_DATUM);
+}

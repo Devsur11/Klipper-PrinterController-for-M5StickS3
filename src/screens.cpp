@@ -124,7 +124,7 @@ void WiFiSetupScreen::draw() {
             footer->draw();
         }
         // FIX: hint that long-press B exits
-        DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 10, "Hold B: back", Theme::MUTED);
+        DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 15 - 10, "Hold B: back", Theme::MUTED);
         return;
     }
 
@@ -432,6 +432,11 @@ void NetworkSetupScreen::init() {
     if (header) delete header;
     if (footer) delete footer;
 
+    //try connecting to the wifi with the saved credentials; if it works, we can skip the wifi setup screen and go straight to this one
+    if (Config::hasWiFiCredentials()) {
+        WiFi.begin(Config::ssid, Config::wifiPassword);
+    }
+
     header = new Header("Printer IP");
     footer = new Footer("Nav", "Add");
 }
@@ -466,7 +471,7 @@ void NetworkSetupScreen::draw() {
     }
 
     // FIX: guide text -- BACK key navigates back to main menu
-    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 8, "BACK key = main menu", Theme::MUTED);
+    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 15, "BACK key = main menu", Theme::MUTED);
 }
 
 void NetworkSetupScreen::drawIPKeyboard(int startY) {
@@ -616,6 +621,12 @@ MainMenuScreen::MainMenuScreen()
 void MainMenuScreen::init() {
     selectedItem = PRINT_STATUS;
 
+    //Check if klippy is connected; if not, go to klippy state screen
+    if (!apiClient.isKlippyConnected()) {
+        screenManager.switchScreen(ScreenType::KLIPPY_STATE);
+        return;
+    }
+
     if (header) delete header;
     if (footer) delete footer;
 
@@ -691,7 +702,7 @@ void MainMenuScreen::handleButtonBLongPress() {
 //   B / long-press B: back to main menu
 
 PrintStatusScreen::PrintStatusScreen()
-    : progressBar(nullptr), header(nullptr), footer(nullptr) {}
+    : progressBar(nullptr), header(nullptr), footer(nullptr), isLoading(false), loadingStartTime(0) {}
 
 void PrintStatusScreen::init() {
     // FIX: Check if klippy is connected; if not, go to klippy state screen
@@ -713,6 +724,18 @@ void PrintStatusScreen::draw() {
     M5.Display.fillScreen(Theme::BG);
     if (header) header->draw();
 
+    // FIX: Check for loading timeout (5 seconds)
+    if (isLoading && millis() - loadingStartTime > 5000) {
+        isLoading = false;
+    }
+
+    // FIX: Show loading box during blocking operations
+    if (isLoading) {
+        DisplayUtils::drawLoadingBox("Processing...");
+        if (footer) footer->draw();
+        return;
+    }
+
     int contentY = Display::HEADER_HEIGHT + 10;
     PrinterState state = apiClient.getPrinterState();
 
@@ -728,7 +751,11 @@ void PrintStatusScreen::draw() {
         DisplayUtils::drawText(5, contentY + 18, state.currentFile, Theme::FG);
 
         if (progressBar) {
-            progressBar->setValue(state.printProgress);
+            // FIX: Ensure progress is 0-100 (convert from 0-1 range if needed)
+            float progress = state.printProgress;
+            if (progress > 1.0f) progress = progress;  // Already in percentage
+            else progress = progress * 100;  // Convert from 0-1 to 0-100
+            progressBar->setValue(progress);
             progressBar->draw();
         }
 
@@ -741,11 +768,13 @@ void PrintStatusScreen::draw() {
         if (state.nozzleTarget > 0) nozzleStr += "/" + String((int)state.nozzleTarget);
         DisplayUtils::drawText(5, contentY + 130, "Nozzle: " + nozzleStr, Theme::FG);
 
-        // Display time - use calculated remaining time from API
+        // FIX: Display time properly - ensure proper unit handling
+        unsigned long elapsedMin = state.printTimeElapsed / 60;
+        unsigned long remainingMin = state.printTimeRemaining / 60;
         DisplayUtils::drawText(5, contentY + 145,
-            "Elapsed:   " + String(state.printTimeElapsed / 60) + " min", Theme::FG);
+            "Elapsed:   " + String(elapsedMin) + " min", Theme::FG);
         DisplayUtils::drawText(5, contentY + 160,
-            "Remaining: " + String(state.printTimeRemaining / 60) + " min", Theme::FG);
+            "Remaining: " + String(remainingMin) + " min", Theme::FG);
     }
 
     if (footer) {
@@ -761,16 +790,25 @@ void PrintStatusScreen::draw() {
     }
 
     // FIX: surface emergency-stop so user knows it exists
-    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 8, "Hold A: E-STOP", Theme::DANGER);
+    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 15, "Hold A: E-STOP", Theme::DANGER);
 }
 
 void PrintStatusScreen::update() {
     // Actively refresh printer state when on print status screen
     apiClient.queryPrinterState();
+    apiClient.queryKlippyState();
+    
+    // FIX: Check if printer went offline during printing
+    if (!apiClient.isKlippyConnected()) {
+        screenManager.switchScreen(ScreenType::KLIPPY_STATE);
+    }
 }
 
 void PrintStatusScreen::handleButtonA() {
     PrinterState state = apiClient.getPrinterState();
+    // FIX: Show loading box for blocking print control operations
+    isLoading = true;
+    loadingStartTime = millis();
     if (state.printing)     apiClient.pausePrint();
     else if (state.paused)  apiClient.resumePrint();
     else                    apiClient.cancelPrint();
@@ -800,7 +838,7 @@ void PrintStatusScreen::handleButtonBLongPress() {
 
 FileBrowserScreen::FileBrowserScreen()
     : selectedFile(0), header(nullptr), footer(nullptr), showConfirmDialog(false),
-      marqueeTime(0), marqueeOffset(0) {}
+      marqueeTime(0), marqueeOffset(0), isLoading(false), loadingStartTime(0) {}
 
 void FileBrowserScreen::init() {
     selectedFile = 0;
@@ -820,6 +858,18 @@ void FileBrowserScreen::init() {
 void FileBrowserScreen::draw() {
     M5.Display.fillScreen(Theme::BG);
     if (header) header->draw();
+
+    // FIX: Check for loading timeout (5 seconds)
+    if (isLoading && millis() - loadingStartTime > 5000) {
+        isLoading = false;
+    }
+
+    // FIX: Show loading box when starting print
+    if (isLoading) {
+        DisplayUtils::drawLoadingBox("Starting print...");
+        if (footer) footer->draw();
+        return;
+    }
 
     int contentY = Display::HEADER_HEIGHT + 5;
     const auto& files = apiClient.getFileList();
@@ -860,8 +910,8 @@ void FileBrowserScreen::draw() {
 
     if (showConfirmDialog && !files.empty()) {
         // Semi-transparent overlay box
-        M5.Display.fillRect(10, 95, Display::WIDTH - 20, 50, Theme::SECONDARY);
-        M5.Display.drawRect(10, 95, Display::WIDTH - 20, 50, Theme::FG);
+        M5.Display.fillRect(0, 95, Display::WIDTH, 50, Theme::SECONDARY);
+        M5.Display.drawRect(0, 95, Display::WIDTH, 50, Theme::FG);
         DisplayUtils::drawCenteredText(100, "Start this file?", Theme::FG);
         // FIX: also apply marquee in dialog for very long names
         String dialogName = files[selectedFile];
@@ -885,7 +935,7 @@ void FileBrowserScreen::draw() {
 
     // FIX: guide user back to menu
     if (!showConfirmDialog)
-        DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 8, "Hold B: main menu", Theme::MUTED);
+        DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 15, "Hold B: main menu", Theme::MUTED);
 }
 
 void FileBrowserScreen::update() {
@@ -923,6 +973,9 @@ void FileBrowserScreen::handleButtonB() {
 
     if (showConfirmDialog) {
         // Confirmed -- start the print
+        // FIX: Show loading box during blocking print start operation
+        isLoading = true;
+        loadingStartTime = millis();
         apiClient.startPrint(files[selectedFile]);
         screenManager.switchScreen(ScreenType::PRINT_STATUS);
     } else {
@@ -1002,7 +1055,7 @@ void HeatingControlScreen::draw() {
         footer->draw();
     }
 
-    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 8, "Hold A:-5  Hold B:back", Theme::MUTED);
+    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 15, "Hold A:-5  Hold B:back", Theme::MUTED);
 }
 
 void HeatingControlScreen::update() {
@@ -1128,7 +1181,7 @@ void AxisControlScreen::draw() {
         footer->draw();
     }
 
-    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 8, "Hold A:dist  Hold B:back", Theme::MUTED);
+    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 15, "Hold A:dist  Hold B:back", Theme::MUTED);
 }
 
 void AxisControlScreen::update() {}
@@ -1240,7 +1293,7 @@ void PowerControlScreen::draw() {
         footer->draw();
     }
 
-    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 8, "Hold B: main menu", Theme::MUTED);
+    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 15, "Hold B: main menu", Theme::MUTED);
 }
 
 void PowerControlScreen::update() {}
@@ -1276,7 +1329,7 @@ void PowerControlScreen::handleButtonBLongPress() {
 //   (read-only screen -- any button exits)
 
 PrinterInfoScreen::PrinterInfoScreen()
-    : header(nullptr), footer(nullptr) {}
+    : header(nullptr), footer(nullptr), lastRefreshTime(0) {}
 
 void PrinterInfoScreen::init() {
     if (header) delete header;
@@ -1284,6 +1337,7 @@ void PrinterInfoScreen::init() {
 
     header = new Header("Printer Info");
     footer = new Footer("Back", "Back");
+    lastRefreshTime = millis();  // FIX: reset refresh timer on init
 }
 
 void PrinterInfoScreen::draw() {
@@ -1315,7 +1369,15 @@ void PrinterInfoScreen::draw() {
     }
 }
 
-void PrinterInfoScreen::update() {}
+void PrinterInfoScreen::update() {
+    // FIX: Refresh every 5 seconds while on this screen
+    unsigned long now = millis();
+    if (now - lastRefreshTime >= 5000) {
+        lastRefreshTime = now;
+        // Query API to get updated connection status
+        apiClient.queryPrinterState();  // This checks klippy connectivity too
+    }
+}
 
 void PrinterInfoScreen::handleButtonA()          { screenManager.switchScreen(ScreenType::MAIN_MENU); }
 void PrinterInfoScreen::handleButtonALongPress() { screenManager.switchScreen(ScreenType::MAIN_MENU); }
@@ -1369,7 +1431,7 @@ void SettingsScreen::draw() {
         footer->draw();
     }
 
-    DisplayUtils::drawText(5, Display::HEIGHT - 8, "Hold B: back", Theme::MUTED);
+    DisplayUtils::drawText(5, Display::HEIGHT, "Hold B: back", Theme::MUTED);
 }
 
 void SettingsScreen::update() {}
@@ -1501,7 +1563,7 @@ void MacroScreen::draw() {
     }
 
     if (!showConfirmDialog)
-        DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 8, "Hold B: main menu", Theme::MUTED);
+        DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 15, "Hold B: main menu", Theme::MUTED);
 }
 
 void MacroScreen::update() {
@@ -1559,11 +1621,14 @@ void MacroScreen::handleButtonBLongPress() {
 //   When offline: Can toggle power devices to restart printer
 
 KlippyStateScreen::KlippyStateScreen()
-    : submenu(MAIN), selectedDeviceOrAction(0), header(nullptr), footer(nullptr), selectedDevice("") {}
+    : submenu(MAIN), selectedDeviceOrAction(0), header(nullptr), footer(nullptr), selectedDevice(""),
+      isLoading(false), loadingStartTime(0), marqueeTime(0), marqueeOffset(0) {}
 
 void KlippyStateScreen::init() {
     submenu = MAIN;
     selectedDeviceOrAction = 0;
+    marqueeTime = millis();  // FIX: reset marquee animation
+    marqueeOffset = 0;
 
     if (header) delete header;
     if (footer) delete footer;
@@ -1585,6 +1650,18 @@ void KlippyStateScreen::init() {
 void KlippyStateScreen::draw() {
     M5.Display.fillScreen(Theme::BG);
     if (header) header->draw();
+
+    // FIX: Check for loading timeout (5 seconds)
+    if (isLoading && millis() - loadingStartTime > 5000) {
+        isLoading = false;
+    }
+
+    // FIX: Show loading box during power control operations
+    if (isLoading) {
+        DisplayUtils::drawLoadingBox("Controlling power...");
+        if (footer) footer->draw();
+        return;
+    }
 
     int contentY = Display::HEADER_HEIGHT + 10;
     String state = apiClient.getKlippyState();
@@ -1612,17 +1689,33 @@ void KlippyStateScreen::draw() {
         return;
     }
 
-    DisplayUtils::drawCenteredText(contentY + 30, message, messageColor);
+    // FIX: Add marquee effect for long messages using M5 display dimensions
+    String displayMessage = message;
+    int displayWidth = M5.Display.width();  // Get width from M5 class
+    int maxMessageWidth = displayWidth - 20;  // Leave 10px margin on each side
+    
+    // Apply marquee if message is too long
+    if (displayMessage.length() > 20) {  // Rough estimate: ~3 chars per 10px
+        String padded = displayMessage + "   ";
+        int scrollPos = marqueeOffset % (padded.length() + 20);
+        displayMessage = padded.substring(scrollPos);
+        if (displayMessage.length() < 20) {
+            displayMessage = displayMessage + padded.substring(0, 20 - displayMessage.length());
+        }
+        displayMessage = displayMessage.substring(0, 20);
+    }
+
+    DisplayUtils::drawCenteredText(contentY + 30, displayMessage, messageColor);
 
     // Display menu
     if (submenu == MAIN) {
         const char* options[] = {
             "Power Control",
             "Restart Printer",
-            "Return to Menu"
+            "Settings"
         };
 
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i <3; i++) {
             int y = contentY + 70 + (i * 20);
             uint16_t color = (i == selectedDeviceOrAction) ? Theme::PRIMARY : Theme::MUTED;
             String prefix = (i == selectedDeviceOrAction) ? "> " : "  ";
@@ -1659,6 +1752,15 @@ void KlippyStateScreen::draw() {
 void KlippyStateScreen::update() {
     // FIX: regularly check if klippy state changes back to ready
     apiClient.queryKlippyState();
+    //try to connect to api if we are offline, in case klippy just restarted
+    apiClient.connect(Config::klipperIP, Config::klipperPort);
+    
+    // FIX: animate marquee effect for long messages
+    unsigned long now = millis();
+    if (now - marqueeTime > 300) {  // Scroll every 300ms
+        marqueeTime = now;
+        marqueeOffset++;
+    }
 }
 
 void KlippyStateScreen::handleButtonA() {
@@ -1690,13 +1792,16 @@ void KlippyStateScreen::handleButtonB() {
             case 1:  // Restart Printer
                 apiClient.sendGcode("FIRMWARE_RESTART");
                 break;
-            case 2:  // Return to Menu
-                screenManager.switchScreen(ScreenType::MAIN_MENU);
+            case 2:  // Settings
+                screenManager.switchScreen(ScreenType::SETTINGS);
                 break;
         }
     } else if (submenu == POWER_DEVICES) {
         const auto& devices = apiClient.getPowerDevices();
         if (!devices.empty()) {
+            // FIX: Show loading box during power device toggle operation
+            isLoading = true;
+            loadingStartTime = millis();
             // Toggle selected power device
             apiClient.setPowerDevice(devices[selectedDeviceOrAction].name, 
                                      !devices[selectedDeviceOrAction].on);

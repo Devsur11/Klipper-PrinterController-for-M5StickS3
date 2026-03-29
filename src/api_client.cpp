@@ -6,7 +6,8 @@
 static const char* TAG = "API";
 
 APIClient::APIClient()
-    : connected(false), klippyConnected(false), port(80), lastUpdateTime(0), updateInterval(2000), requestId(0) {
+    : connected(false), klippyConnected(false), port(80),
+      lastUpdateTime(0), updateInterval(2000), requestId(0) {
     printerState = {false, false, false, 0, 0, 0, 0, 0, 0, 0, 0, "", "offline"};
 }
 
@@ -18,9 +19,6 @@ bool APIClient::connect(const String& h, int p) {
     host = h;
     port = p;
 
-    // FIX: Use /server/info for reachability check, not /printer/info.
-    // /server/info is always available even when Klippy is not ready,
-    // whereas /printer/info can return errors if Klippy is still starting.
     String url = "http://" + host + ":" + String(port) + "/server/info";
     HTTPClient http;
     http.begin(url);
@@ -49,7 +47,7 @@ void APIClient::update() {
     unsigned long now = millis();
     if (now - lastUpdateTime >= updateInterval) {
         lastUpdateTime = now;
-        queryKlippyState();  // FIX: check klippy state first
+        queryKlippyState();
         queryPrinterState();
         queryPowerDevices();
     }
@@ -111,15 +109,11 @@ bool APIClient::httpPost(const String& path, const String& jsonBody, DynamicJson
 }
 
 bool APIClient::postGcode(const String& script) {
-    // FIX: Increased document size from 256 to 1024 to safely hold longer
-    // multi-line G-code scripts (e.g. the move sequence "G91\nG1...\nG90").
     DynamicJsonDocument reqDoc(1024);
     reqDoc["script"] = script;
     String body;
     serializeJson(reqDoc, body);
 
-    // FIX: Response doc also bumped to 512; Moonraker returns error detail
-    // objects that overflow a 256-byte document on failure.
     DynamicJsonDocument resp(512);
     if (!httpPost("/printer/gcode/script", body, resp)) {
         ESP_LOGW(TAG, "GCode failed: %s", script.c_str());
@@ -134,25 +128,23 @@ bool APIClient::postGcode(const String& script) {
 // ---------------------------------------------------------------------------
 
 void APIClient::queryPrinterState() {
-    // FIX: The old code used GET with a bare query string like
-    //   ?print_stats&extruder&heater_bed
-    // which is not a valid Moonraker objects query format.
+    // BUG FIX 1 & 2: print_stats has NO "progress" field and NO estimated
+    // total time field. Progress lives in virtual_sdcard.progress (0.0-1.0).
+    // Time remaining must be calculated: (print_duration / progress) - print_duration.
+    // Both virtual_sdcard and print_stats must be queried together.
     //
-    // The correct approach is POST /printer/objects/query with a JSON body
-    // specifying the objects dict. Passing null for an object requests all
-    // of its attributes.
-    //
-    // Reference: POST /printer/objects/query
-    //   Body: {"objects": {"print_stats": null, "extruder": null, "heater_bed": null}}
-    DynamicJsonDocument reqDoc(256);
+    // BUG FIX 4: Request doc bumped 256->512 to fit the added virtual_sdcard key.
+    // BUG FIX 5: Response doc bumped 2048->4096 for the extra object payload.
+    DynamicJsonDocument reqDoc(512);
     JsonObject objects = reqDoc.createNestedObject("objects");
-    objects["print_stats"] = nullptr;
-    objects["extruder"]    = nullptr;
-    objects["heater_bed"]  = nullptr;
+    objects["print_stats"]    = nullptr;
+    objects["virtual_sdcard"] = nullptr;  // FIX: this is where progress lives
+    objects["extruder"]       = nullptr;
+    objects["heater_bed"]     = nullptr;
     String reqBody;
     serializeJson(reqDoc, reqBody);
 
-    DynamicJsonDocument doc(2048);
+    DynamicJsonDocument doc(4096);
     if (!httpPost("/printer/objects/query", reqBody, doc)) {
         ESP_LOGW(TAG, "Failed to query printer state");
         return;
@@ -164,32 +156,47 @@ void APIClient::queryPrinterState() {
         return;
     }
 
+    // --- print_stats: state, elapsed time, filename ---
     JsonVariant ps = status["print_stats"];
     if (!ps.isNull()) {
         const char* state = ps["state"] | "standby";
         printerState.printing         = (strcmp(state, "printing") == 0);
         printerState.paused           = (strcmp(state, "paused")   == 0);
-        printerState.printProgress    = ps["progress"]       | 0.0f;
-        printerState.printTimeElapsed =
-            (unsigned long)(ps["print_duration"] | 0.0);
-        printerState.printTimeTotal   = 
-            (unsigned long)(ps["info"]["total_duration"] | 0.0);
-        // FIX: Calculate remaining time properly using total_duration
-        if (printerState.printTimeTotal > printerState.printTimeElapsed) {
-            printerState.printTimeRemaining = 
-                printerState.printTimeTotal - printerState.printTimeElapsed;
-        } else {
-            printerState.printTimeRemaining = 0;
-        }
+        printerState.printTimeElapsed = (unsigned long)(ps["print_duration"] | 0.0f);
         printerState.currentFile      = ps["filename"] | "";
     }
 
+    // --- virtual_sdcard: progress (0.0 - 1.0) ---
+    // BUG FIX 1: progress must be read from virtual_sdcard, not print_stats.
+    JsonVariant vsd = status["virtual_sdcard"];
+    if (!vsd.isNull()) {
+        printerState.printProgress = vsd["progress"] | 0.0f;
+    }
+
+    // --- Derive remaining / total from elapsed + progress ---
+    // BUG FIX 2: Use the standard formula instead of the nonexistent
+    // info.total_duration field.  Guard against division by zero (progress==0
+    // before the print really starts, or when the print has just completed).
+    float progress = printerState.printProgress;
+    unsigned long elapsed = printerState.printTimeElapsed;
+    if (progress > 0.001f) {
+        unsigned long totalEstimate = (unsigned long)((float)elapsed / progress);
+        printerState.printTimeTotal     = totalEstimate;
+        printerState.printTimeRemaining =
+            (totalEstimate > elapsed) ? (totalEstimate - elapsed) : 0;
+    } else {
+        printerState.printTimeTotal     = 0;
+        printerState.printTimeRemaining = 0;
+    }
+
+    // --- extruder ---
     JsonVariant ext = status["extruder"];
     if (!ext.isNull()) {
         printerState.nozzleTemp   = ext["temperature"] | 0.0f;
         printerState.nozzleTarget = ext["target"]      | 0.0f;
     }
 
+    // --- heater_bed ---
     JsonVariant bed = status["heater_bed"];
     if (!bed.isNull()) {
         printerState.bedTemp   = bed["temperature"] | 0.0f;
@@ -200,11 +207,8 @@ void APIClient::queryPrinterState() {
 }
 
 void APIClient::queryKlippyState() {
-    // FIX: Query klippy state (ready, startup, error, shutdown)
-    // Use /printer/info endpoint to check state
     DynamicJsonDocument doc(512);
     if (!httpGet("/printer/info", doc)) {
-        // If we get a 503 error, klippy is not connected
         klippyConnected = false;
         printerState.klippyState = "offline";
         ESP_LOGW(TAG, "Klippy host not connected (offline)");
@@ -219,37 +223,61 @@ void APIClient::queryKlippyState() {
             printerState.klippyState = String(state);
             klippyConnected = true;
             ESP_LOGI(TAG, "Klippy state: %s", state);
+        } else {
+            printerState.klippyState = "unknown";
+            klippyConnected = false;
+            ESP_LOGW(TAG, "Klippy state not found in response");
         }
     }
 }
 
 void APIClient::queryPrintStats() {
-    // FIX: Same as queryPrinterState -- use POST with a JSON body.
-    DynamicJsonDocument reqDoc(128);
+    // BUG FIX 6: Same progress fix as queryPrinterState — must include
+    // virtual_sdcard and apply the same derived-time formula.
+    DynamicJsonDocument reqDoc(256);
     JsonObject objects = reqDoc.createNestedObject("objects");
-    objects["print_stats"] = nullptr;
+    objects["print_stats"]    = nullptr;
+    objects["virtual_sdcard"] = nullptr;  // FIX: needed for progress
     String reqBody;
     serializeJson(reqDoc, reqBody);
 
-    DynamicJsonDocument doc(1024);
+    DynamicJsonDocument doc(2048);
     if (!httpPost("/printer/objects/query", reqBody, doc)) {
         ESP_LOGW(TAG, "Failed to query print stats");
         return;
     }
 
-    JsonVariant ps = doc["result"]["status"]["print_stats"];
-    if (ps.isNull()) return;
+    JsonVariant status = doc["result"]["status"];
+    if (status.isNull()) return;
 
-    const char* state = ps["state"] | "standby";
-    printerState.printing      = (strcmp(state, "printing") == 0);
-    printerState.paused        = (strcmp(state, "paused")   == 0);
-    printerState.printProgress = ps["progress"] | 0.0f;
-    printerState.currentFile   = ps["filename"] | "";
+    JsonVariant ps = status["print_stats"];
+    if (!ps.isNull()) {
+        const char* state = ps["state"] | "standby";
+        printerState.printing         = (strcmp(state, "printing") == 0);
+        printerState.paused           = (strcmp(state, "paused")   == 0);
+        printerState.printTimeElapsed = (unsigned long)(ps["print_duration"] | 0.0f);
+        printerState.currentFile      = ps["filename"] | "";
+    }
+
+    JsonVariant vsd = status["virtual_sdcard"];
+    if (!vsd.isNull()) {
+        printerState.printProgress = vsd["progress"] | 0.0f;
+    }
+
+    float progress = printerState.printProgress;
+    unsigned long elapsed = printerState.printTimeElapsed;
+    if (progress > 0.001f) {
+        unsigned long totalEstimate = (unsigned long)((float)elapsed / progress);
+        printerState.printTimeTotal     = totalEstimate;
+        printerState.printTimeRemaining =
+            (totalEstimate > elapsed) ? (totalEstimate - elapsed) : 0;
+    } else {
+        printerState.printTimeTotal     = 0;
+        printerState.printTimeRemaining = 0;
+    }
 }
 
 void APIClient::queryPowerDevices() {
-    // FIX: Increased response doc from 2048 to 4096. Installations with many
-    // power devices (smart plugs, relays, etc.) can exceed 2 KB easily.
     DynamicJsonDocument doc(4096);
     if (!httpGet("/machine/device_power/devices", doc)) {
         ESP_LOGW(TAG, "Failed to query power devices");
@@ -269,8 +297,6 @@ void APIClient::queryPowerDevices() {
 }
 
 void APIClient::queryFileList() {
-    // FIX: Increased doc from 8192 to 16384. Large gcode libraries easily
-    // exceed 8 KB of JSON (each entry has path, modified, size, permissions).
     DynamicJsonDocument doc(16384);
     if (!httpGet("/server/files/list?root=gcodes", doc)) {
         ESP_LOGW(TAG, "Failed to query file list");
@@ -288,12 +314,9 @@ void APIClient::queryFileList() {
 }
 
 void APIClient::queryMacros() {
-    // FIX: Query available macros from Moonraker
-    // Macros are typically available via /printer/gcode/help but for execution
-    // we just need to know their names from the /printer/info endpoint
     DynamicJsonDocument reqDoc(128);
     JsonObject objects = reqDoc.createNestedObject("objects");
-    objects["gcode_macro"] = nullptr;  // Query all gcode_macro objects
+    objects["gcode_macro"] = nullptr;
     String reqBody;
     serializeJson(reqDoc, reqBody);
 
@@ -307,14 +330,12 @@ void APIClient::queryMacros() {
     if (status.isNull()) return;
 
     macros.clear();
-    // Iterate through all objects to find gcode_macro ones
     for (JsonPair p : status) {
         String key = p.key().c_str();
         if (key.startsWith("gcode_macro ")) {
-            // Extract macro name from "gcode_macro MACRO_NAME"
-            String macroName = key.substring(12);  // Skip "gcode_macro "
+            String macroName = key.substring(12);
             KlipperMacro m;
-            m.name = macroName;
+            m.name        = macroName;
             m.description = "(Custom Macro)";
             macros.push_back(m);
         }
@@ -327,16 +348,22 @@ void APIClient::queryMacros() {
 // ---------------------------------------------------------------------------
 
 void APIClient::startPrint(const String& filename) {
-    // FIX: The previous code passed "?filename=..." inside the path string
-    // to httpPost(), which then prepended the host/port and posted an empty
-    // "{}" body. That works for the URL construction but the Moonraker docs
-    // specify the filename must be a query parameter on the POST request.
-    // Keeping it as a query param (not in the body) is the documented form.
-    //
-    // Reference: POST /printer/print/start?filename=<filename>
-    //   No request body required.
+    // BUG FIX 8: URL-encode the filename so that spaces, Polish diacritics,
+    // and other special characters don't break the query string.
+    String encoded = "";
+    for (int i = 0; i < (int)filename.length(); i++) {
+        char c = filename[i];
+        if (isAlphaNumeric(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            encoded += c;
+        } else {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%%%02X", (unsigned char)c);
+            encoded += buf;
+        }
+    }
+
     DynamicJsonDocument doc(256);
-    String path = "/printer/print/start?filename=" + filename;
+    String path = "/printer/print/start?filename=" + encoded;
     if (!httpPost(path, "", doc)) {
         ESP_LOGW(TAG, "Failed to start print");
         return;
@@ -394,15 +421,15 @@ void APIClient::moveAxis(const String& axis, float distance, float feedrate) {
 }
 
 void APIClient::homeAxis(const String& axis) {
-    // FIX: add homing support for individual axes
-    // G28 is the home command; can optionally specify which axes
-    String gcode = "G28 " + axis;
+    // BUG FIX 7: Sending "G28 " (with trailing space and no axis) is
+    // harmless on most firmware but explicitly wrong. If axis is empty,
+    // send plain "G28" to home all axes.
+    String gcode = axis.length() > 0 ? "G28 " + axis : "G28";
     postGcode(gcode);
-    ESP_LOGI(TAG, "Homing axis %s", axis.c_str());
+    ESP_LOGI(TAG, "Homing: %s", gcode.c_str());
 }
 
 void APIClient::executeMacro(const String& name) {
-    // FIX: Execute a custom macro by sending its name as a gcode command
     postGcode(name);
     ESP_LOGI(TAG, "Executed macro: %s", name.c_str());
 }
@@ -412,11 +439,6 @@ void APIClient::sendGcode(const String& gcode) {
 }
 
 void APIClient::setPowerDevice(const String& device, bool on) {
-    // Correct endpoint per Moonraker docs:
-    //   POST /machine/device_power/device
-    //   Body: { "device": "<name>", "action": "on" | "off" | "toggle" }
-    //
-    // The original code had the right idea but was missing the leading slash.
     String body = "{\"device\": \"" + device + "\", \"action\": \""
                   + String(on ? "on" : "off") + "\"}";
     DynamicJsonDocument doc(256);
@@ -424,18 +446,11 @@ void APIClient::setPowerDevice(const String& device, bool on) {
         ESP_LOGW(TAG, "Failed to set power device %s", device.c_str());
     else {
         ESP_LOGI(TAG, "Power device %s -> %s", device.c_str(), on ? "ON" : "OFF");
-        // FIX: immediately reparse power device status after toggle
         queryPowerDevices();
     }
 }
 
 void APIClient::updatePrinter() {
-    // FIX: /machine/update/update does not exist.
-    // The correct endpoint to trigger a refresh of update status is:
-    //   POST /machine/update/refresh
-    // If the intent is to actually apply an update for a specific component,
-    // that would be POST /machine/update/update?name=<component>, but a
-    // bare refresh (checking for updates) is the safer default here.
     DynamicJsonDocument doc(512);
     if (!httpPost("/machine/update/refresh", "", doc))
         ESP_LOGW(TAG, "Failed to trigger update refresh");
@@ -444,7 +459,7 @@ void APIClient::updatePrinter() {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy stubs -- kept so the header compiles without changes
+// Legacy stubs
 // ---------------------------------------------------------------------------
 
 bool APIClient::sendJsonRpc(const String& method, JsonDocument& params) {
