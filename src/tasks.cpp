@@ -48,6 +48,14 @@ void TaskManager::screenDimTask(void* pvParameters) {
             unsigned long now = millis();
             unsigned long timeSinceActivity = (lastActivityTime > 0) ? (now - lastActivityTime) : 0;
             unsigned long dimTimeoutMs = Config::screenDimTimeout * 1000;
+
+            if(Config::screenDimTimeout == 0) {
+                // Dim is disabled, ensure brightness is at max
+                if (currentBrightness < MAX_BRIGHTNESS) {
+                    currentBrightness = MAX_BRIGHTNESS;
+                    M5.Display.setBrightness(currentBrightness);
+                }
+            }
             
             if (timeSinceActivity > dimTimeoutMs && lastActivityTime > 0) {
                 // Time to dim: gradually decrease brightness

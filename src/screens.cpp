@@ -1709,6 +1709,7 @@ void SettingsScreen::draw() {
             // Show current dim status
             if (i == SCREEN_DIM) {
                 String status = Config::screenDimEnabled ? "ON (" + String(Config::screenDimTimeout) + "s)" : "OFF";
+                if(Config::screenDimTimeout == 0) status = "OFF";
                 displayText = displayText + " [" + status + "]";
             }
             
@@ -1731,7 +1732,7 @@ void SettingsScreen::handleButtonB() {
     if (editingDim) {
         // Decrease dim timeout
         editingDimTimeout -= 5;
-        if (editingDimTimeout < 10) editingDimTimeout = 10;
+        if (editingDimTimeout < 0) editingDimTimeout = 0;
     } else {
         selectedItem = (selectedItem + 1) % 7;
     }
