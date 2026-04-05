@@ -20,6 +20,9 @@ const char KEYBOARD_ROWS[4][9] = {
 const char SPECIAL_KEYS[5] = {'<', '^', ' ', 'E', 'X'};
 bool shiftActive = false;
 
+// NetworkSetupScreen static flag
+bool NetworkSetupScreen::nextIsEditing = false;
+
 // ========== SPLASH SCREEN ==========
 void SplashScreen::init() {
     startTime = millis();
@@ -160,8 +163,8 @@ void WiFiSetupScreen::draw() {
     if (state == CONNECTED) {
         DisplayUtils::drawCenteredText(contentY + 40, "WiFi Connected!", Theme::SUCCESS);
         DisplayUtils::drawCenteredText(contentY + 60, networkManager.getLocalIP(), Theme::PRIMARY);
-        DisplayUtils::drawCenteredText(contentY + 80, "A: Retry", Theme::MUTED);
-        DisplayUtils::drawCenteredText(contentY + 95, "B: Continue", Theme::MUTED);
+        DisplayUtils::drawCenteredText(contentY + 80, "A: Continue", Theme::MUTED);
+        DisplayUtils::drawCenteredText(contentY + 95, "B: Retry", Theme::MUTED);
     }
 
     if (footer) footer->draw();
@@ -422,7 +425,9 @@ void WiFiSetupScreen::handleButtonBLongPress() {
 
 NetworkSetupScreen::NetworkSetupScreen()
     : state(ENTER_IP), keyboardCursorX(0), keyboardCursorY(0),
-      header(nullptr), footer(nullptr) {}
+      header(nullptr), footer(nullptr), isEditingMode(nextIsEditing) {
+    nextIsEditing = false;  // Reset flag after reading
+}
 
 void NetworkSetupScreen::init() {
     state = ENTER_IP;
@@ -454,11 +459,18 @@ void NetworkSetupScreen::draw() {
         networkManager.isConnected() ? "OK  " + networkManager.getLocalIP() : "Not connected",
         wifiColor);
 
-    DisplayUtils::drawText(5, contentY + 18, "Printer IP:", Theme::FG);
-    String display = klipperIP.length() > 0 ? klipperIP : "(empty)";
-    DisplayUtils::drawText(5, contentY + 30, display, Theme::PRIMARY);
+    if (!networkManager.isConnected()) {
+        // WiFi not connected - show setup prompt
+        DisplayUtils::drawCenteredText(contentY + 50, "WiFi not connected", Theme::WARNING);
+        DisplayUtils::drawCenteredText(contentY + 70, "Hold button A to setup", Theme::MUTED);
+    } else {
+        // WiFi connected - show IP keyboard
+        DisplayUtils::drawText(5, contentY + 18, "Printer IP:", Theme::FG);
+        String display = klipperIP.length() > 0 ? klipperIP : "(empty)";
+        DisplayUtils::drawText(5, contentY + 30, display, Theme::PRIMARY);
 
-    drawIPKeyboard(contentY + 50);
+        drawIPKeyboard(contentY + 50);
+    }
 
     if (footer) {
         if (networkManager.isConnected()) {
@@ -573,7 +585,15 @@ void NetworkSetupScreen::executeSelectedIPKey() {
     // ignore space cell (col 3 of row 2)
 }
 
-void NetworkSetupScreen::update() {}
+void NetworkSetupScreen::update() {
+    // Auto-exit if WiFi is connected and IP is valid (only if not in explicit editing mode)
+    if (!isEditingMode && networkManager.isConnected() && isValidIPv4(klipperIP) && klipperIP.length() > 0) {
+        Config::klipperIP = klipperIP;
+        Config::saveToStorage();
+        apiClient.connect(klipperIP, 7125);
+        screenManager.switchScreen(ScreenType::MAIN_MENU);
+    }
+}
 
 void NetworkSetupScreen::handleButtonB() {
     if (!networkManager.isConnected()) {
@@ -1757,6 +1777,7 @@ void SettingsScreen::handleButtonA() {
                 screenManager.switchScreen(ScreenType::WIFI_SETUP);
                 break;
             case PRINTER_IP:
+                NetworkSetupScreen::setNextIsEditing(true);
                 screenManager.switchScreen(ScreenType::NETWORK_SETUP);
                 break;
             case BRIGHTNESS:

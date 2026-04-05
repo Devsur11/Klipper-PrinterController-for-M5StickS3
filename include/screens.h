@@ -71,6 +71,8 @@ public:
     void handleButtonB() override;
     void handleButtonALongPress() override;
     void handleButtonBLongPress() override;
+    void setEditingMode(bool editing) { isEditingMode = editing; }  // Set by caller if entering from Settings
+    static void setNextIsEditing(bool editing) { nextIsEditing = editing; }  // Set before creating screen
 
 private:
     // CONFIRM state is unused now; ENTER_IP covers everything.
@@ -82,6 +84,8 @@ private:
     int keyboardCursorY;
     Header* header;
     Footer* footer;
+    bool isEditingMode;  // Disable auto-exit when explicitly editing IP from Settings
+    static bool nextIsEditing;  // Static flag to pass editing mode to next screen
 
     void drawIPKeyboard(int startY);
     char getSelectedIPChar();
