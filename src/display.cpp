@@ -50,7 +50,19 @@ void Header::draw() {
     M5.Display.setTextColor(Theme::FG);
     M5.Display.setTextDatum(ML_DATUM);
     M5.Display.drawString(title, 2, Display::HEADER_HEIGHT / 2);
+    
+    // Update power system to refresh battery reading
+    M5.update();
+    // M5.Power.update();
+    
     int batteryLevel = M5.Power.getBatteryLevel();
+    // Clamp battery level to valid range (0-100%)
+    if (batteryLevel < 0) {
+        batteryLevel = 0;
+    }
+    if (batteryLevel > 100) {
+        batteryLevel = 100;
+    }
     String batteryText = String(batteryLevel) + "%";
     M5.Display.setTextDatum(MR_DATUM);
     M5.Display.drawString(batteryText, Display::WIDTH - 2, Display::HEADER_HEIGHT / 2);
@@ -65,15 +77,15 @@ void Footer::draw() {
     M5.Display.fillRect(0, footerY, Display::WIDTH, Display::FOOTER_HEIGHT, Theme::SECONDARY);
     
     M5.Display.setTextColor(Theme::FG);
-    
-    if (leftText.length() > 0) {
+    //dont ask me what I did here, just lazy me
+    if (rightText.length() > 0) {
         M5.Display.setTextDatum(ML_DATUM);
-        M5.Display.drawString(leftText, 2, footerY + Display::FOOTER_HEIGHT / 2);
+        M5.Display.drawString(rightText, 2, footerY + Display::FOOTER_HEIGHT / 2);
     }
     
-    if (rightText.length() > 0) {
+    if (leftText.length() > 0) {
         M5.Display.setTextDatum(MR_DATUM);
-        M5.Display.drawString(rightText, Display::WIDTH - 2, footerY + Display::FOOTER_HEIGHT / 2);
+        M5.Display.drawString(leftText, Display::WIDTH - 2, footerY + Display::FOOTER_HEIGHT / 2);
     }
 }
 

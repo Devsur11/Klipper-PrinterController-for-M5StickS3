@@ -368,7 +368,3 @@ Contributions welcome! Please:
 ## Contact & Questions
 
 For questions or suggestions, please open an issue on GitHub or contact the development team.
-
----
-
-**Happy printing! Keep your M5StickS3 controller on your workbench for quick printer control!**

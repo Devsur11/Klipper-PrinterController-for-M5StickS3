@@ -88,6 +88,7 @@ private:
     int port;
     bool connected;
     bool klippyConnected;  // FIX: track if klippy host is connected
+    int klippyFailureCount;  // Track consecutive Klippy connection failures
     PrinterState printerState;
     std::vector<PowerDevice> powerDevices;
     std::vector<String> fileList;

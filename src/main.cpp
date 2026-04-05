@@ -8,6 +8,7 @@
 #include "tasks.h"
 #include "inputManager.h"
 #include "loading_indicator.h"
+#include "imu.h"
 #include <M5GFX.h>
 #include <M5Unified.h>
 #include "esp_log.h"
@@ -34,6 +35,9 @@ void setup() {
     M5.Power.begin();
     M5.Display.begin();
     M5.Power.setExtOutput(false);
+    
+    // Update power system on startup to get initial battery reading
+    M5.Power.begin();
     M5.Display.init();
     M5.Display.setRotation(8);
     M5.Display.setColorDepth(16);  // RGB565
@@ -114,6 +118,14 @@ void setup() {
     TaskManager::initTasks();
     ESP_LOGI(TAG, "Background tasks initialized");
     
+    // Initialize IMU (BMI270)
+    IMU& imu = IMU::getInstance();
+    if (imu.init(47, 48)) {  // SDA=G47, SCL=G48
+        ESP_LOGI(TAG, "IMU (BMI270) initialized successfully");
+    } else {
+        ESP_LOGW(TAG, "IMU initialization failed, operation will continue without IMU");
+    }
+    
     // Initialize input manager
     inputManager::init();
     ESP_LOGI(TAG, "Input manager initialized");
@@ -147,24 +159,23 @@ void loop() {
     // Update screen rendering (UI is always on core 0)
     screenManager.update();
     
-    // Draw loading indicator overlay if an API request is in progress
-    if (LoadingIndicator::getInstance().isLoading()) {
-        DisplayUtils::drawLoadingBox(LoadingIndicator::getInstance().getMessage());
-    }
-    
     // Handle short button presses
     if (inputManager::isButtonAPressed()) {
+        TaskManager::recordActivity();  // Record activity on button press
         screenManager.handleButtonA();
     }
     if (inputManager::isButtonBPressed()) {
+        TaskManager::recordActivity();  // Record activity on button press
         screenManager.handleButtonB();
     }
     
     // Handle long button presses
     if (inputManager::isButtonALongPressed()) {
+        TaskManager::recordActivity();  // Record activity on button press
         screenManager.handleButtonALongPress();
     }
     if (inputManager::isButtonBLongPressed()) {
+        TaskManager::recordActivity();  // Record activity on button press
         screenManager.handleButtonBLongPress();
     }
     

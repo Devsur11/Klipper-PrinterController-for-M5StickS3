@@ -6,7 +6,7 @@
 static const char* TAG = "API";
 
 APIClient::APIClient()
-    : connected(false), klippyConnected(false), port(80),
+    : connected(false), klippyConnected(false), klippyFailureCount(0), port(80),
       lastUpdateTime(0), updateInterval(2000), requestId(0) {
     printerState = {false, false, false, 0, 0, 0, 0, 0, 0, 0, 0, "", "offline"};
 }
@@ -219,12 +219,21 @@ void APIClient::queryPrinterState() {
 void APIClient::queryKlippyState() {
     DynamicJsonDocument doc(512);
     if (!httpGet("/printer/info", doc)) {
-        klippyConnected = false;
-        printerState.klippyState = "offline";
-        ESP_LOGW(TAG, "Klippy host not connected (offline)");
+        klippyFailureCount++;
+        ESP_LOGW(TAG, "Klippy query failed (attempt %d/5)", klippyFailureCount);
+        
+        // Only mark as offline after 5 consecutive failures
+        if (klippyFailureCount >= 5) {
+            klippyConnected = false;
+            printerState.klippyState = "offline";
+            ESP_LOGW(TAG, "Klippy host not connected (offline) - %d failures", klippyFailureCount);
+        }
         return;
     }
 
+    // Successful connection - reset failure counter
+    klippyFailureCount = 0;
+    
     JsonVariant result = doc["result"];
     if (!result.isNull()) {
         JsonVariant stateObj = result["state"];
@@ -435,6 +444,7 @@ void APIClient::homeAxis(const String& axis) {
     // harmless on most firmware but explicitly wrong. If axis is empty,
     // send plain "G28" to home all axes.
     String gcode = axis.length() > 0 ? "G28 " + axis : "G28";
+    if(axis == "ALL") gcode = "G28";  // FIX: support homing all axes with "ALL" keyword
     postGcode(gcode);
     ESP_LOGI(TAG, "Homing: %s", gcode.c_str());
 }

@@ -202,18 +202,35 @@ public:
     void update() override;
     void handleButtonA() override;
     void handleButtonB() override;
-    void handleButtonALongPress() override; // cycle distance preset
+    void handleButtonALongPress() override; // adjust distance / move direction
     void handleButtonBLongPress() override; // cancel dialog / back to menu
 
 private:
-    enum Axis { X, Y, Z, E };
-    enum Mode { MOVE_MODE, HOME_MODE };  // FIX: add home mode
+    enum Axis { ALL, X, Y, Z, E };
+    enum Mode { MOVE_MODE, HOME_MODE, Z_ADJUST, E_ADJUST };  // FIX: IMU-based movement modes
+    enum Direction { POSITIVE, NEGATIVE, NEUTRAL };  // Movement direction from IMU
+    
     Axis selectedAxis;
     Mode mode;  // FIX: select between move and home
     float distance;
     Header* header;
     Footer* footer;
     bool showConfirmDialog; // true while waiting for move confirmation
+    
+    // IMU-based movement
+    Direction imuDirection;
+    float imuTilt;  // Tilt angle in degrees
+    unsigned long lastImuReadTime;
+    bool useIMU;  // Toggle IMU-based vs manual distance control
+    
+    // Z and E adjustment state
+    float zAdjustDistance;
+    float eAdjustDistance;
+    
+    // Helper methods
+    void updateIMUReading();
+    void drawIMUIndicator(int y);
+    Direction getTiltDirection(float tilt);
 };
 
 // ============================================================
@@ -272,10 +289,12 @@ public:
     void handleButtonBLongPress() override; // back to main menu unconditionally
 
 private:
-    enum SettingItem { WIFI, PRINTER_IP, BRIGHTNESS, RESET, DONE };
+    enum SettingItem { WIFI, PRINTER_IP, BRIGHTNESS, SCREEN_DIM, ABOUT, RESET, DONE };
     int selectedItem;
     Header* header;
     Footer* footer;
+    int editingDimTimeout;  // Temporary value when editing screen dim timeout
+    bool editingDim;  // Whether we're editing the dim timeout
 };
 
 // ============================================================
@@ -326,6 +345,25 @@ private:
     unsigned long loadingStartTime;  // FIX: timeout after 5 seconds
     unsigned long marqueeTime;  // FIX: track marquee animation timing
     int marqueeOffset;  // FIX: track scroll position for text marquee
+};
+
+// ============================================================
+// AboutScreen
+// ============================================================
+class AboutScreen : public Screen {
+public:
+    AboutScreen();
+    void init() override;
+    void draw() override;
+    void update() override;
+    void handleButtonA() override;
+    void handleButtonB() override;
+    void handleButtonALongPress() override;
+    void handleButtonBLongPress() override;
+
+private:
+    Header* header;
+    Footer* footer;
 };
 
 #endif // SCREENS_H

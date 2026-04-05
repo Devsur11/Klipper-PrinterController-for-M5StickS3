@@ -1,5 +1,6 @@
 #include "screens.h"
 #include "config.h"
+#include "imu.h"
 #include <algorithm>
 
 extern ScreenManager screenManager;
@@ -44,8 +45,8 @@ void SplashScreen::draw() {
 }
 
 void SplashScreen::update() {}
-void SplashScreen::handleButtonA() {}
 void SplashScreen::handleButtonB() {}
+void SplashScreen::handleButtonA() {}
 
 // ========== WIFI SETUP SCREEN ==========
 
@@ -317,7 +318,7 @@ void WiFiSetupScreen::update() {
     }
 }
 
-void WiFiSetupScreen::handleButtonA() {
+void WiFiSetupScreen::handleButtonB() {
     switch (state) {
         case SELECT: {
             const auto& networks = networkManager.getNetworks();
@@ -346,7 +347,7 @@ void WiFiSetupScreen::handleButtonALongPress() {
     if (state == ENTER_PASSWORD) executeSelectedKey();
 }
 
-void WiFiSetupScreen::handleButtonB() {
+void WiFiSetupScreen::handleButtonA() {
     switch (state) {
         case SELECT:
             // Advance from SELECT into ENTER_PASSWORD
@@ -574,7 +575,7 @@ void NetworkSetupScreen::executeSelectedIPKey() {
 
 void NetworkSetupScreen::update() {}
 
-void NetworkSetupScreen::handleButtonA() {
+void NetworkSetupScreen::handleButtonB() {
     if (!networkManager.isConnected()) {
         // FIX: redirect straight to WiFi setup instead of doing nothing
         screenManager.switchScreen(ScreenType::WIFI_SETUP);
@@ -591,8 +592,8 @@ void NetworkSetupScreen::handleButtonALongPress() {
     executeSelectedIPKey();
 }
 
-void NetworkSetupScreen::handleButtonB() {
-    // FIX: B now only moves cursor row (no redirect here; handleButtonA handles WiFi)
+void NetworkSetupScreen::handleButtonA() {
+    // FIX: B now only moves cursor row (no redirect here; handleButtonB handles WiFi)
     keyboardCursorY = (keyboardCursorY + 1) % 3;
 }
 
@@ -666,7 +667,7 @@ void MainMenuScreen::draw() {
 
 void MainMenuScreen::update() {}
 
-void MainMenuScreen::handleButtonA() {
+void MainMenuScreen::handleButtonB() {
     selectedItem = (selectedItem + 1) % 8;  // FIX: 8 items now
 }
 
@@ -674,7 +675,7 @@ void MainMenuScreen::handleButtonALongPress() {
     selectedItem = (selectedItem - 1 + 8) % 8;  // FIX: 8 items now
 }
 
-void MainMenuScreen::handleButtonB() {
+void MainMenuScreen::handleButtonA() {
     ScreenType screenType;
     switch (selectedItem) {
         case PRINT_STATUS: screenType = ScreenType::PRINT_STATUS;     break;
@@ -691,7 +692,7 @@ void MainMenuScreen::handleButtonB() {
 }
 
 void MainMenuScreen::handleButtonBLongPress() {
-    handleButtonB();
+    handleButtonA();
 }
 
 // ========== PRINT STATUS SCREEN ==========
@@ -804,7 +805,7 @@ void PrintStatusScreen::update() {
     }
 }
 
-void PrintStatusScreen::handleButtonA() {
+void PrintStatusScreen::handleButtonB() {
     PrinterState state = apiClient.getPrinterState();
     // FIX: Show loading box for blocking print control operations
     isLoading = true;
@@ -819,7 +820,7 @@ void PrintStatusScreen::handleButtonALongPress() {
     apiClient.emergencyStop();
 }
 
-void PrintStatusScreen::handleButtonB() {
+void PrintStatusScreen::handleButtonA() {
     screenManager.switchScreen(ScreenType::MAIN_MENU);
 }
 
@@ -947,7 +948,7 @@ void FileBrowserScreen::update() {
     }
 }
 
-void FileBrowserScreen::handleButtonA() {
+void FileBrowserScreen::handleButtonB() {
     const auto& files = apiClient.getFileList();
     if (!files.empty()) {
         if (showConfirmDialog) {
@@ -967,7 +968,7 @@ void FileBrowserScreen::handleButtonALongPress() {
     }
 }
 
-void FileBrowserScreen::handleButtonB() {
+void FileBrowserScreen::handleButtonA() {
     const auto& files = apiClient.getFileList();
     if (files.empty()) return;
 
@@ -1063,7 +1064,7 @@ void HeatingControlScreen::update() {
     apiClient.queryPrinterState();
 }
 
-void HeatingControlScreen::handleButtonA() {
+void HeatingControlScreen::handleButtonB() {
     if (state == BED_TEMP) {
         bedTarget += 5;
         if (bedTarget > 120) bedTarget = 0;
@@ -1085,7 +1086,7 @@ void HeatingControlScreen::handleButtonALongPress() {
     }
 }
 
-void HeatingControlScreen::handleButtonB() {
+void HeatingControlScreen::handleButtonA() {
     if (state == BED_TEMP) {
         apiClient.setHeaterTarget("heater_bed", (float)bedTarget);
         state = NOZZLE_TEMP;
@@ -1103,21 +1104,38 @@ void HeatingControlScreen::handleButtonBLongPress() {
 // ========== AXIS CONTROL SCREEN ==========
 
 // Navigation map:
-//   A: cycle axis (X -> Y -> Z -> E -> X)
-//   long-press A: cycle distance preset
-//   B: show confirmation dialog
-//   long-press B: back to main menu without moving  (FIX: was no safe exit)
-//   Confirm dialog: B=move  long-press B=cancel
+//   A: execute move (with IMU tilt/manual input)
+//   long-press A: toggle IMU/manual mode or adjust distance
+//   B: cycle mode (MOVE -> Z_ADJUST -> E_ADJUST -> HOME -> MOVE)
+//   long-press B: back to main menu without moving
+//   
+//   MOVE mode: IMU determines direction, user confirms
+//   Z_ADJUST: +/- buttons for Z height adjustment
+//   E_ADJUST: +/- buttons for extruder control
+//   HOME mode: Home selected axis
 
 AxisControlScreen::AxisControlScreen()
     : selectedAxis(X), distance(10), mode(MOVE_MODE), header(nullptr), footer(nullptr),
-      showConfirmDialog(false) {}
+      showConfirmDialog(false), imuDirection(NEUTRAL), imuTilt(0), lastImuReadTime(0),
+      useIMU(true), zAdjustDistance(0.1f), eAdjustDistance(5.0f) {}
 
 void AxisControlScreen::init() {
     selectedAxis = X;
     distance = 10;
-    mode = MOVE_MODE;  // FIX: start in move mode
+    mode = MOVE_MODE;
     showConfirmDialog = false;
+    zAdjustDistance = 0.1f;
+    eAdjustDistance = 5.0f;
+    imuDirection = NEUTRAL;
+    imuTilt = 0;
+    lastImuReadTime = 0;
+
+    // Initialize IMU and enable IMU mode when available
+    IMU& imu = IMU::getInstance();
+    useIMU = imu.isInitialized();
+    if (!useIMU) {
+        useIMU = imu.init(47, 48);  // SDA=G47, SCL=G48
+    }
 
     if (header) delete header;
     if (footer) delete footer;
@@ -1131,43 +1149,104 @@ void AxisControlScreen::draw() {
     if (header) header->draw();
 
     int contentY = Display::HEADER_HEIGHT + 10;
-    const char* axes[] = {"X", "Y", "Z", "E"};
-    // FIX: show the available distance presets so user knows what to expect
-    const float presets[] = {0.1f, 1.0f, 10.0f, 50.0f};
+    const char* axes[] = {"ALL", "X", "Y", "Z", "E"};
 
-    // FIX: show mode selector
+    // Draw mode indicator
     uint16_t modeColor = Theme::WARNING;
-    String modeStr = (mode == MOVE_MODE) ? "Mode: MOVE" : "Mode: HOME";
+    String modeStr;
+    if (mode == MOVE_MODE) {
+        modeStr = useIMU ? "Mode: MOVE (IMU)" : "Mode: MOVE";
+    } else if (mode == Z_ADJUST) {
+        modeStr = "Mode: Z-Adjust";
+    } else if (mode == E_ADJUST) {
+        modeStr = "Mode: E-Adjust";
+    } else {
+        modeStr = "Mode: HOME";
+    }
     DisplayUtils::drawText(5, contentY, modeStr, modeColor);
 
-    DisplayUtils::drawText(5, contentY + 20,      "Axis:     ", Theme::FG);
-    DisplayUtils::drawText(60, contentY + 20,     axes[selectedAxis], Theme::PRIMARY);
-
     if (mode == MOVE_MODE) {
-        DisplayUtils::drawText(5, contentY + 35, "Distance: ", Theme::FG);
-        DisplayUtils::drawText(60, contentY + 35, String(distance, 1) + " mm", Theme::PRIMARY);
-        DisplayUtils::drawText(5, contentY + 50, "Feed:     30 mm/s", Theme::MUTED);
-        if (selectedAxis == Z && distance > 5.0f) {
-            DisplayUtils::drawText(5, contentY + 65, "! Large Z move", Theme::WARNING);
-        }
-    } else {
-        DisplayUtils::drawText(5, contentY + 35, "Press B to home this", Theme::MUTED);
-        DisplayUtils::drawText(5, contentY + 50, "axis", Theme::MUTED);
-    }
-
-    // FIX: confirm dialog before any motion -- axis moves are not undoable
-    if (showConfirmDialog) {
-        M5.Display.fillRect(10, 95, Display::WIDTH - 20, 50, Theme::SECONDARY);
-        M5.Display.drawRect(10, 95, Display::WIDTH - 20, 50, Theme::FG);
-        const char* axisName = axes[selectedAxis];
-        String msg;
-        if (mode == MOVE_MODE) {
-            msg = String("Move ") + axisName + " " + String(distance, 1) + "mm?";
+        // MOVE MODE: IMU-based or manual movement
+        DisplayUtils::drawText(5, contentY + 20, "Axis: ", Theme::FG);
+        DisplayUtils::drawText(60, contentY + 20, axes[selectedAxis], Theme::PRIMARY);
+        
+        if (useIMU) {
+            // Draw IMU indicator and tilt
+            drawIMUIndicator(contentY + 40);
+            
+            DisplayUtils::drawText(5, contentY + 70, "Tilt: ", Theme::FG);
+            DisplayUtils::drawText(60, contentY + 70, String(imuTilt, 1) + (char)248, Theme::PRIMARY);
+            
+            String dirStr = (imuDirection == POSITIVE) ? "+" :
+                           (imuDirection == NEGATIVE) ? "-" : "neutral";
+            DisplayUtils::drawText(5, contentY + 85, "Dir: " + dirStr, Theme::MUTED);
         } else {
-            msg = String("Home ") + axisName + "?";
+            // Manual mode
+            DisplayUtils::drawText(5, contentY + 35, "Distance: ", Theme::FG);
+            DisplayUtils::drawText(95, contentY + 35, String(distance, 1) + " mm", Theme::PRIMARY);
+            DisplayUtils::drawText(5, contentY + 50, "Feed: 30 mm/s", Theme::MUTED);
+            DisplayUtils::drawText(5, contentY + 65, "A again: confirm", Theme::MUTED);
         }
-        DisplayUtils::drawCenteredText(105, msg, Theme::FG);
-        DisplayUtils::drawCenteredText(125, "B=Exec  Hold B=Cancel", Theme::MUTED);
+        
+        if (showConfirmDialog) {
+            M5.Display.fillRect(10, 95, Display::WIDTH - 20, 50, Theme::SECONDARY);
+            M5.Display.drawRect(10, 95, Display::WIDTH - 20, 50, Theme::FG);
+            String msg;
+            if (useIMU && imuDirection != NEUTRAL) {
+                msg = String("Move ") + axes[selectedAxis] + 
+                     (imuDirection == POSITIVE ? " +" : " -") + 
+                     String(distance, 1) + "mm?";
+            } else {
+                msg = String("Move ") + axes[selectedAxis] + 
+                     (distance > 0 ? " +" : " ") + String(distance, 1) + "mm?";
+            }
+            DisplayUtils::drawCenteredText(105, msg, Theme::FG);
+            DisplayUtils::drawCenteredText(125, "B=Exec  Hold B=Cancel", Theme::MUTED);
+        }
+    } 
+    else if (mode == Z_ADJUST) {
+        // Z-ADJUST MODE: Direct +/- buttons
+        DisplayUtils::drawText(5, contentY + 20, "Z Height Adjustment", Theme::FG);
+        DisplayUtils::drawText(5, contentY + 35, "Distance:", Theme::FG);
+        DisplayUtils::drawText(95, contentY + 35, String(zAdjustDistance, 2) + "mm", Theme::PRIMARY);
+        DisplayUtils::drawText(5, contentY + 50, "Press A: +", Theme::MUTED);
+        DisplayUtils::drawText(5, contentY + 65, "Hold A: -", Theme::MUTED);
+        
+        if (showConfirmDialog) {
+            M5.Display.fillRect(10, 95, Display::WIDTH - 20, 50, Theme::SECONDARY);
+            M5.Display.drawRect(10, 95, Display::WIDTH - 20, 50, Theme::FG);
+            DisplayUtils::drawCenteredText(105, "Z " + String(zAdjustDistance, 2) + "mm?", Theme::FG);
+            DisplayUtils::drawCenteredText(125, "B=Apply  Hold B:No", Theme::MUTED);
+        }
+    }
+    else if (mode == E_ADJUST) {
+        // E-ADJUST MODE: Direct +/- buttons for extruder
+        DisplayUtils::drawText(5, contentY + 20, "Extruder Adjustment", Theme::FG);
+        DisplayUtils::drawText(5, contentY + 35, "Distance:", Theme::FG);
+        DisplayUtils::drawText(95, contentY + 35, String(eAdjustDistance, 1) + "mm", Theme::PRIMARY);
+        DisplayUtils::drawText(5, contentY + 50, "Press A: +", Theme::MUTED);
+        DisplayUtils::drawText(5, contentY + 65, "Hold A: -", Theme::MUTED);
+        
+        if (showConfirmDialog) {
+            M5.Display.fillRect(10, 95, Display::WIDTH - 20, 50, Theme::SECONDARY);
+            M5.Display.drawRect(10, 95, Display::WIDTH - 20, 50, Theme::FG);
+            DisplayUtils::drawCenteredText(105, "Extrude " + String(eAdjustDistance, 1) + "mm?", Theme::FG);
+            DisplayUtils::drawCenteredText(125, "B=Apply  Hold B:No", Theme::MUTED);
+        }
+    }
+    else {
+        // HOME MODE
+        DisplayUtils::drawText(5, contentY + 20, "Axis: ", Theme::FG);
+        DisplayUtils::drawText(60, contentY + 20, axes[selectedAxis], Theme::PRIMARY);
+        DisplayUtils::drawText(5, contentY + 35, "Press B to home", Theme::MUTED);
+        
+        if (showConfirmDialog) {
+            M5.Display.fillRect(10, 95, Display::WIDTH - 20, 50, Theme::SECONDARY);
+            M5.Display.drawRect(10, 95, Display::WIDTH - 20, 50, Theme::FG);
+            String msg = String("Home ") + axes[selectedAxis] + "?";
+            DisplayUtils::drawCenteredText(105, msg, Theme::FG);
+            DisplayUtils::drawCenteredText(125, "B=Exec  Hold B=Cancel", Theme::MUTED);
+        }
     }
 
     if (footer) {
@@ -1181,65 +1260,247 @@ void AxisControlScreen::draw() {
         footer->draw();
     }
 
-    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 15, "Hold A:dist  Hold B:back", Theme::MUTED);
+    String hint = (mode == Z_ADJUST || mode == E_ADJUST) ? "Hold B:back" : 
+                  (mode == MOVE_MODE) ? "A:axis  Hold B:back" : "A:axis  Hold B:back";
+    DisplayUtils::drawText(5, Display::HEIGHT - Display::FOOTER_HEIGHT - 15, hint, Theme::MUTED);
 }
 
-void AxisControlScreen::update() {}
-
-void AxisControlScreen::handleButtonA() {
-    if (showConfirmDialog) {
-        showConfirmDialog = false;
-    } else {
-        // FIX: toggle between move and home modes
-        mode = (mode == MOVE_MODE) ? HOME_MODE : MOVE_MODE;
+void AxisControlScreen::update() {
+    if (useIMU && mode == MOVE_MODE) {
+        updateIMUReading();
     }
 }
 
-void AxisControlScreen::handleButtonALongPress() {
-    // FIX: cycle through distance presets (only in move mode)
-    if (mode == MOVE_MODE) {
-        const float presets[] = {0.1f, 1.0f, 10.0f, 50.0f};
-        const int numPresets = 4;
-        int current = 0;
-        for (int i = 0; i < numPresets; i++) {
-            if (fabsf(distance - presets[i]) < 0.01f) { current = i; break; }
-        }
-        distance = presets[(current + 1) % numPresets];
-    } else {
-        // In home mode, cycle through axes
-        selectedAxis = (Axis)((selectedAxis + 1) % 4);
+void AxisControlScreen::updateIMUReading() {
+    unsigned long now = millis();
+    if (now - lastImuReadTime < 100) {  // Update every 100ms
+        return;
     }
+    lastImuReadTime = now;
+    
+    IMU& imu = IMU::getInstance();
+    if (!imu.isInitialized()) {
+        imuDirection = NEUTRAL;
+        imuTilt = 0;
+        return;
+    }
+    
+    // Safety: if IMU read takes too long, skip this update and try again next time
+    unsigned long readStart = millis();
+    IMU::AccelData accel = imu.readAccel();
+    
+    // If read took too long (>20ms), mark as failed and try again next cycle
+    if (millis() - readStart > 20) {
+        imuDirection = NEUTRAL;
+        imuTilt = 0;
+        return;
+    }
+    
+    // Skip invalid readings (all zeros)
+    if (accel.x == 0 && accel.y == 0 && accel.z == 0) {
+        imuDirection = NEUTRAL;
+        imuTilt = 0;
+        return;
+    }
+    
+    // Choose the strongest tilt axis so movement is detected even if the
+    // device is held in a different orientation than the original assumption.
+    float tiltX = atan2f(accel.x, accel.z) * 180.0f / M_PI;
+    float tiltY = atan2f(accel.y, accel.z) * 180.0f / M_PI;
+    imuTilt = (fabsf(tiltY) > fabsf(tiltX)) ? tiltY : tiltX;
+    
+    // Determine direction based on tilt threshold (deadzone: ±10 degrees)
+    if (imuTilt > 10.0f) {
+        imuDirection = POSITIVE;
+        distance = constrain(fabsf(imuTilt) * 0.5f, 0.1f, 50.0f);
+    } else if (imuTilt < -10.0f) {
+        imuDirection = NEGATIVE;
+        distance = constrain(fabsf(imuTilt) * 0.5f, 0.1f, 50.0f);
+    } else {
+        imuDirection = NEUTRAL;
+        distance = 0;
+    }
+}
+
+AxisControlScreen::Direction AxisControlScreen::getTiltDirection(float tilt) {
+    if (tilt > 10.0f) return POSITIVE;
+    if (tilt < -10.0f) return NEGATIVE;
+    return NEUTRAL;
+}
+
+void AxisControlScreen::drawIMUIndicator(int y) {
+    // Draw a simple tilt indicator using the accelerometer data
+    int barWidth = 100;
+    int barX = 5;
+    int barY = y + 5;
+    
+    // Draw background bar
+    M5.Display.fillRect(barX, barY, barWidth, 8, Theme::MUTED);
+    M5.Display.drawRect(barX, barY, barWidth, 8, Theme::FG);
+    
+    // Draw indicator based on tilt
+    int indicatorPos = barX + (barWidth / 2);  // Center
+    if (imuDirection == POSITIVE) {
+        indicatorPos = constrain(barX + (barWidth / 2) + (int)(imuTilt * 2), barX, barX + barWidth - 2);
+    } else if (imuDirection == NEGATIVE) {
+        indicatorPos = constrain(barX + (barWidth / 2) + (int)(imuTilt * 2), barX, barX + barWidth - 2);
+    }
+    
+    M5.Display.fillRect(indicatorPos, barY, 2, 8, Theme::PRIMARY);
 }
 
 void AxisControlScreen::handleButtonB() {
     if (showConfirmDialog) {
-        // Confirmed -- execute the action (move or home)
-        String axis;
-        switch (selectedAxis) {
-            case X: axis = "X"; break;
-            case Y: axis = "Y"; break;
-            case Z: axis = "Z"; break;
-            case E: axis = "E"; break;
-        }
-        if (mode == MOVE_MODE) {
-            apiClient.moveAxis(axis, distance, 1800); // 30 mm/s = 1800 mm/min
-        } else {
-            apiClient.homeAxis(axis);  // FIX: execute home command
-        }
         showConfirmDialog = false;
-        // Stay on screen so user can make additional moves or homes
     } else {
-        // First press -- show confirmation before moving
-        showConfirmDialog = true;
+        // Cycle through modes: MOVE -> Z_ADJUST -> E_ADJUST -> HOME -> MOVE
+        if (mode == MOVE_MODE) {
+            mode = Z_ADJUST;
+        } else if (mode == Z_ADJUST) {
+            mode = E_ADJUST;
+        } else if (mode == E_ADJUST) {
+            mode = HOME_MODE;
+        } else {
+            mode = MOVE_MODE;
+        }
+    }
+}
+
+void AxisControlScreen::handleButtonALongPress() {
+    if (mode == MOVE_MODE) {
+        // In MOVE mode, toggle between IMU and manual mode (if IMU is available)
+        if (IMU::getInstance().isInitialized()) {
+            useIMU = !useIMU;
+        } else {
+            // If IMU not available, cycle through manual presets
+            const float presets[] = {0.1f, 1.0f, 10.0f, 50.0f};
+            const int numPresets = 4;
+            int current = 0;
+            for (int i = 0; i < numPresets; i++) {
+                if (fabsf(distance - presets[i]) < 0.01f) { current = i; break; }
+            }
+            distance = presets[(current + 1) % numPresets];
+        }
+    } 
+    else if (mode == Z_ADJUST) {
+        // In Z_ADJUST mode, decrease distance
+        zAdjustDistance -= 0.1f;
+        if (zAdjustDistance < 0.1f) zAdjustDistance = 0.1f;
+    } 
+    else if (mode == E_ADJUST) {
+        // In E_ADJUST mode, decrease distance
+        eAdjustDistance -= 1.0f;
+        if (eAdjustDistance < 1.0f) eAdjustDistance = 1.0f;
+    }
+    else {
+        // In HOME mode, cycle through axes backward
+        selectedAxis = (Axis)((selectedAxis + 4) % 5);  // 4 = 5-1 (backward)
+    }
+}
+
+void AxisControlScreen::handleButtonA() {
+    if (mode == MOVE_MODE) {
+        if (useIMU) {
+            // IMU-based movement
+            if (showConfirmDialog) {
+                // Execute the IMU-based movement
+                String axis;
+                switch (selectedAxis) {
+                    case ALL: axis = "ALL"; break;
+                    case X: axis = "X"; break;
+                    case Y: axis = "Y"; break;
+                    case Z: axis = "Z"; break;
+                    case E: axis = "E"; break;
+                }
+                
+                // Apply direction to distance
+                float finalDistance = distance;
+                if (imuDirection == NEGATIVE) {
+                    finalDistance = -distance;
+                }
+                
+                if (imuDirection != NEUTRAL) {
+                    apiClient.moveAxis(axis, finalDistance, 1800);  // 30 mm/s
+                }
+                
+                showConfirmDialog = false;
+            } else if (imuDirection != NEUTRAL) {
+                // Show confirmation dialog if IMU detected movement
+                showConfirmDialog = true;
+            } else {
+                // Cycle to next axis
+                selectedAxis = (Axis)((selectedAxis + 1) % 5);
+            }
+        } else {
+            // Manual mode - no IMU
+            if (showConfirmDialog) {
+                // Execute manual movement
+                String axis;
+                switch (selectedAxis) {
+                    case ALL: axis = "ALL"; break;
+                    case X: axis = "X"; break;
+                    case Y: axis = "Y"; break;
+                    case Z: axis = "Z"; break;
+                    case E: axis = "E"; break;
+                }
+                
+                apiClient.moveAxis(axis, distance, 1800);  // 30 mm/s
+                showConfirmDialog = false;
+            } else {
+                // First press - show confirmation
+                showConfirmDialog = true;
+            }
+        }
+    }
+    else if (mode == Z_ADJUST) {
+        if (showConfirmDialog) {
+            // Apply Z adjustment
+            apiClient.moveAxis("Z", zAdjustDistance, 300);  // Slower speed for Z
+            showConfirmDialog = false;
+            zAdjustDistance = 0.1f;
+        } else {
+            // Increase Z distance
+            zAdjustDistance += 0.1f;
+            if (zAdjustDistance > 5.0f) zAdjustDistance = 5.0f;
+            showConfirmDialog = true;
+        }
+    }
+    else if (mode == E_ADJUST) {
+        if (showConfirmDialog) {
+            // Apply extruder movement
+            apiClient.moveAxis("E", eAdjustDistance, 300);
+            showConfirmDialog = false;
+            eAdjustDistance = 5.0f;
+        } else {
+            // Increase extruder distance
+            eAdjustDistance += 1.0f;
+            if (eAdjustDistance > 50.0f) eAdjustDistance = 50.0f;
+            showConfirmDialog = true;
+        }
+    }
+    else if (mode == HOME_MODE) {
+        // HOME mode: home selected axis
+        if (true) {
+            String axis;
+            switch (selectedAxis) {
+                case ALL: axis = "ALL"; break;
+                case X: axis = "X"; break;
+                case Y: axis = "Y"; break;
+                case Z: axis = "Z"; break;
+                case E: axis = "E"; break;
+            }
+            apiClient.homeAxis(axis);
+            showConfirmDialog = false;
+        }
     }
 }
 
 void AxisControlScreen::handleButtonBLongPress() {
     if (showConfirmDialog) {
-        // FIX: cancel pending action (move or home)
+        // Cancel pending action
         showConfirmDialog = false;
     } else {
-        // FIX: exit to main menu without moving anything
+        // Exit to main menu
         screenManager.switchScreen(ScreenType::MAIN_MENU);
     }
 }
@@ -1298,7 +1559,7 @@ void PowerControlScreen::draw() {
 
 void PowerControlScreen::update() {}
 
-void PowerControlScreen::handleButtonA() {
+void PowerControlScreen::handleButtonB() {
     const auto& devices = apiClient.getPowerDevices();
     if (!devices.empty())
         selectedDevice = (selectedDevice + 1) % devices.size();
@@ -1311,7 +1572,7 @@ void PowerControlScreen::handleButtonALongPress() {
         selectedDevice = (selectedDevice - 1 + devices.size()) % devices.size();
 }
 
-void PowerControlScreen::handleButtonB() {
+void PowerControlScreen::handleButtonA() {
     const auto& devices = apiClient.getPowerDevices();
     if (!devices.empty())
         apiClient.setPowerDevice(devices[selectedDevice].name, !devices[selectedDevice].on);
@@ -1379,9 +1640,9 @@ void PrinterInfoScreen::update() {
     }
 }
 
-void PrinterInfoScreen::handleButtonA()          { screenManager.switchScreen(ScreenType::MAIN_MENU); }
-void PrinterInfoScreen::handleButtonALongPress() { screenManager.switchScreen(ScreenType::MAIN_MENU); }
 void PrinterInfoScreen::handleButtonB()          { screenManager.switchScreen(ScreenType::MAIN_MENU); }
+void PrinterInfoScreen::handleButtonALongPress() { screenManager.switchScreen(ScreenType::MAIN_MENU); }
+void PrinterInfoScreen::handleButtonA()          { screenManager.switchScreen(ScreenType::MAIN_MENU); }
 void PrinterInfoScreen::handleButtonBLongPress() { screenManager.switchScreen(ScreenType::MAIN_MENU); }
 
 // ========== SETTINGS SCREEN ==========
@@ -1393,10 +1654,13 @@ void PrinterInfoScreen::handleButtonBLongPress() { screenManager.switchScreen(Sc
 //                 if you didn't navigate to the "Back" item first)
 
 SettingsScreen::SettingsScreen()
-    : selectedItem(WIFI), header(nullptr), footer(nullptr) {}
+    : selectedItem(WIFI), header(nullptr), footer(nullptr), 
+      editingDimTimeout(30), editingDim(false) {}
 
 void SettingsScreen::init() {
     selectedItem = WIFI;
+    editingDim = false;
+    editingDimTimeout = Config::screenDimTimeout;
 
     if (header) delete header;
     if (footer) delete footer;
@@ -1410,69 +1674,126 @@ void SettingsScreen::draw() {
     if (header) header->draw();
 
     int contentY = Display::HEADER_HEIGHT + 5;
-    const char* items[] = {
-        "WiFi Settings",
-        "Printer IP",
-        "Brightness",
-        "Factory Reset",
-        "Back"
-    };
+    
+    if (editingDim) {
+        // Screen dim editing mode
+        DisplayUtils::drawText(5, contentY, "Screen Dim Timeout", Theme::FG);
+        DisplayUtils::drawText(5, contentY + 18, "Value: " + String(editingDimTimeout) + " sec", Theme::PRIMARY);
+        DisplayUtils::drawText(5, contentY + 36, "A: increase", Theme::MUTED);
+        DisplayUtils::drawText(5, contentY + 51, "B: decrease", Theme::MUTED);
+        DisplayUtils::drawText(5, contentY + 66, "Hold B: save & exit", Theme::MUTED);
+        
+        if (footer) {
+            footer->setLeftText("Inc");
+            footer->setRightText("Dec");
+            footer->draw();
+        }
+    } else {
+        // Menu mode
+        const char* items[] = {
+            "WiFi Settings",
+            "Printer IP",
+            "Brightness",
+            "Screen Dim",
+            "About",
+            "Factory Reset",
+            "Back"
+        };
 
-    for (int i = 0; i < 5; i++) {
-        int y = contentY + (i * 18);
-        uint16_t color = (i == selectedItem) ? Theme::PRIMARY : Theme::MUTED;
-        String prefix = (i == selectedItem) ? "> " : "  ";
-        DisplayUtils::drawText(5, y, prefix + items[i], color);
+        for (int i = 0; i < 7; i++) {
+            int y = contentY + (i * 18);
+            uint16_t color = (i == selectedItem) ? Theme::PRIMARY : Theme::MUTED;
+            String prefix = (i == selectedItem) ? "> " : "  ";
+            
+            String displayText = items[i];
+            // Show current dim status
+            if (i == SCREEN_DIM) {
+                String status = Config::screenDimEnabled ? "ON (" + String(Config::screenDimTimeout) + "s)" : "OFF";
+                displayText = displayText + " [" + status + "]";
+            }
+            
+            DisplayUtils::drawText(5, y, prefix + displayText, color);
+        }
+
+        if (footer) {
+            footer->setLeftText("Next");
+            footer->setRightText("Enter");
+            footer->draw();
+        }
+
+        DisplayUtils::drawText(5, Display::HEIGHT, "Hold B: back", Theme::MUTED);
     }
-
-    if (footer) {
-        footer->setLeftText("Next");
-        footer->setRightText("Enter");
-        footer->draw();
-    }
-
-    DisplayUtils::drawText(5, Display::HEIGHT, "Hold B: back", Theme::MUTED);
 }
 
 void SettingsScreen::update() {}
 
-void SettingsScreen::handleButtonA() {
-    selectedItem = (selectedItem + 1) % 5;
+void SettingsScreen::handleButtonB() {
+    if (editingDim) {
+        // Decrease dim timeout
+        editingDimTimeout -= 5;
+        if (editingDimTimeout < 10) editingDimTimeout = 10;
+    } else {
+        selectedItem = (selectedItem + 1) % 7;
+    }
 }
 
 void SettingsScreen::handleButtonALongPress() {
-    selectedItem = (selectedItem - 1 + 5) % 5;
+    if (!editingDim) {
+        selectedItem = (selectedItem - 1 + 7) % 7;
+    }
 }
 
-void SettingsScreen::handleButtonB() {
-    switch (selectedItem) {
-        case WIFI:
-            Config::clearWiFiData();
-            networkManager.disconnect();
-            screenManager.switchScreen(ScreenType::WIFI_SETUP);
-            break;
-        case PRINTER_IP:
-            screenManager.switchScreen(ScreenType::NETWORK_SETUP);
-            break;
-        case BRIGHTNESS:
-            // TODO: inline brightness slider -- stub for now
-            // When implemented, adjust M5.Display.setBrightness() here
-            break;
-        case RESET:
-            Config::reset();
-            screenManager.switchScreen(ScreenType::SPLASH);
-            break;
-        case DONE:
-            screenManager.switchScreen(ScreenType::MAIN_MENU);
-            break;
-        default:
-            break;
+void SettingsScreen::handleButtonA() {
+    if (editingDim) {
+        // Increase dim timeout
+        editingDimTimeout += 5;
+        if (editingDimTimeout > 300) editingDimTimeout = 300;
+    } else {
+        switch (selectedItem) {
+            case WIFI:
+                Config::clearWiFiData();
+                networkManager.disconnect();
+                screenManager.switchScreen(ScreenType::WIFI_SETUP);
+                break;
+            case PRINTER_IP:
+                screenManager.switchScreen(ScreenType::NETWORK_SETUP);
+                break;
+            case BRIGHTNESS:
+                // TODO: inline brightness slider -- stub for now
+                // When implemented, adjust M5.Display.setBrightness() here
+                break;
+            case SCREEN_DIM:
+                // Toggle screen dim or enter editing mode
+                editingDim = true;
+                editingDimTimeout = Config::screenDimTimeout;
+                break;
+            case ABOUT:
+                screenManager.switchScreen(ScreenType::ABOUT);
+                break;
+            case RESET:
+                Config::reset();
+                screenManager.switchScreen(ScreenType::SPLASH);
+                break;
+            case DONE:
+                screenManager.switchScreen(ScreenType::MAIN_MENU);
+                break;
+            default:
+                break;
+        }
     }
-
+}
 
 void SettingsScreen::handleButtonBLongPress() {
-    // FIX: always exit to main menu regardless of which item is highlighted
-    screenManager.switchScreen(ScreenType::MAIN_MENU);
+    if (editingDim) {
+        // Save screen dim timeout and exit
+        Config::screenDimEnabled = !Config::screenDimEnabled;  // Toggle on save
+        Config::screenDimTimeout = editingDimTimeout;
+        Config::saveToStorage();
+        editingDim = false;
+    } else {
+        // FIX: always exit to main menu regardless of which item is highlighted
+        screenManager.switchScreen(ScreenType::MAIN_MENU);
+    }
 }
 
 // ========== MACRO SCREEN ==========
@@ -1575,7 +1896,7 @@ void MacroScreen::update() {
     }
 }
 
-void MacroScreen::handleButtonA() {
+void MacroScreen::handleButtonB() {
     const auto& macros = apiClient.getMacros();
     if (!macros.empty()) {
         if (showConfirmDialog) {
@@ -1593,7 +1914,7 @@ void MacroScreen::handleButtonALongPress() {
     }
 }
 
-void MacroScreen::handleButtonB() {
+void MacroScreen::handleButtonA() {
     const auto& macros = apiClient.getMacros();
     if (macros.empty()) return;
 
@@ -1763,7 +2084,7 @@ void KlippyStateScreen::update() {
     }
 }
 
-void KlippyStateScreen::handleButtonA() {
+void KlippyStateScreen::handleButtonB() {
     if (submenu == MAIN) {
         selectedDeviceOrAction = (selectedDeviceOrAction + 1) % 3;
     } else if (submenu == POWER_DEVICES) {
@@ -1782,7 +2103,7 @@ void KlippyStateScreen::handleButtonALongPress() {
     }
 }
 
-void KlippyStateScreen::handleButtonB() {
+void KlippyStateScreen::handleButtonA() {
     if (submenu == MAIN) {
         switch (selectedDeviceOrAction) {
             case 0:  // Power Control
@@ -1818,4 +2139,58 @@ void KlippyStateScreen::handleButtonBLongPress() {
         submenu = MAIN;
         selectedDeviceOrAction = 0;
     }
+}
+
+// ========== ABOUT SCREEN ==========
+
+AboutScreen::AboutScreen()
+    : header(nullptr), footer(nullptr) {}
+
+void AboutScreen::init() {
+    if (header) delete header;
+    if (footer) delete footer;
+
+    header = new Header("About");
+    footer = new Footer("Back", "Back");
+}
+
+void AboutScreen::draw() {
+    M5.Display.fillScreen(Theme::BG);
+    if (header) header->draw();
+
+    int contentY = Display::HEADER_HEIGHT + 10;
+
+    DisplayUtils::drawCenteredText(contentY, "Klipper Controller", Theme::PRIMARY);
+    DisplayUtils::drawCenteredText(contentY + 15, "v1.0", Theme::MUTED);
+
+    DisplayUtils::drawCenteredText(contentY + 35, "Device Info", Theme::FG);
+    DisplayUtils::drawText(5, contentY + 50, "Device: M5StickS3", Theme::MUTED);
+    DisplayUtils::drawText(5, contentY + 65, "MCU: ESP32-S3", Theme::MUTED);
+    DisplayUtils::drawText(5, contentY + 80, "Flash: 8MB", Theme::MUTED);
+    DisplayUtils::drawText(5, contentY + 95, "RAM: 8MB", Theme::MUTED);
+    DisplayUtils::drawText(5, contentY + 110, "Display: 1.14 inch", Theme::MUTED);
+
+    if (footer) {
+        footer->setLeftText("Back");
+        footer->setRightText("Back");
+        footer->draw();
+    }
+}
+
+void AboutScreen::update() {}
+
+void AboutScreen::handleButtonA() {
+    screenManager.switchScreen(ScreenType::SETTINGS);
+}
+
+void AboutScreen::handleButtonB() {
+    screenManager.switchScreen(ScreenType::SETTINGS);
+}
+
+void AboutScreen::handleButtonALongPress() {
+    screenManager.switchScreen(ScreenType::SETTINGS);
+}
+
+void AboutScreen::handleButtonBLongPress() {
+    screenManager.switchScreen(ScreenType::SETTINGS);
 }

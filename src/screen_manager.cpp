@@ -98,6 +98,8 @@ Screen* ScreenManager::createScreen(ScreenType type) {
             return new MacroScreen();
         case ScreenType::KLIPPY_STATE:  // FIX: add klippy state screen
             return new KlippyStateScreen();
+        case ScreenType::ABOUT:
+            return new AboutScreen();
         default:
             return new SplashScreen();
     }

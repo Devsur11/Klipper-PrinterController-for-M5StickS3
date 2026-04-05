@@ -12,6 +12,8 @@ public:
     static String klipperIP;
     static int klipperPort;
     static String machineName;
+    static bool screenDimEnabled;
+    static int screenDimTimeout;  // in seconds
     
     static bool hasWiFiCredentials();
     static bool hasKlipperIP();

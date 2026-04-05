@@ -9,6 +9,8 @@ String Config::wifiPassword = "";
 String Config::klipperIP = "";
 int Config::klipperPort = 7125;
 String Config::machineName = "Klipper Controller";
+bool Config::screenDimEnabled = true;
+int Config::screenDimTimeout = 30;  // 30 seconds default
 const char* Config::CONFIG_FILE = "/config.json";
 
 bool Config::hasWiFiCredentials() {
@@ -26,6 +28,8 @@ void Config::saveToStorage() {
     doc["klipperIP"] = klipperIP;
     doc["klipperPort"] = klipperPort;
     doc["machineName"] = machineName;
+    doc["screenDimEnabled"] = screenDimEnabled;
+    doc["screenDimTimeout"] = screenDimTimeout;
     
     File file = SPIFFS.open(CONFIG_FILE, FILE_WRITE);
     if (!file) {
@@ -64,6 +68,8 @@ void Config::loadFromStorage() {
     klipperIP = doc["klipperIP"].as<String>();
     klipperPort = doc["klipperPort"].as<int>();
     machineName = doc["machineName"].as<String>();
+    screenDimEnabled = doc["screenDimEnabled"].as<bool>();
+    screenDimTimeout = doc["screenDimTimeout"].as<int>();
     
     ESP_LOGI(TAG, "Config loaded successfully");
 }
@@ -86,6 +92,8 @@ void Config::reset() {
     klipperIP = "";
     klipperPort = 7125;
     machineName = "Klipper Controller";
+    screenDimEnabled = true;
+    screenDimTimeout = 30;
     
     if (SPIFFS.exists(CONFIG_FILE)) {
         SPIFFS.remove(CONFIG_FILE);

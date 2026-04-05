@@ -17,7 +17,8 @@ enum class ScreenType {
     POWER_CONTROL,
     PRINTER_INFO,
     MACROS,
-    KLIPPY_STATE  // FIX: add screen for klippy state handling
+    KLIPPY_STATE,  // FIX: add screen for klippy state handling
+    ABOUT          // About screen with version and device info
 };
 
 class Screen {
